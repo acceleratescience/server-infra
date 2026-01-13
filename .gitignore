@@ -1,0 +1,5 @@
+inventory.ini
+.env
+*.pem
+*.key
+stacks/*/.env

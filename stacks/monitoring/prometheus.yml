@@ -1,0 +1,13 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  # CPU & RAM
+  - job_name: 'system-stats'
+    static_configs:
+      - targets: ['node-exporter:9100']
+
+  # GPU
+  - job_name: 'gpu-stats'
+    static_configs:
+      - targets: ['dcgm-exporter:9400']
