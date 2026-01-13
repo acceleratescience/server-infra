@@ -1,0 +1,35 @@
+---
+- name: Nuke from orbit (it's the only way to be sure)
+  hosts: gpu_servers
+  become: yes
+
+  tasks:
+    - name: Stop all compose stacks
+      shell: docker compose down --volumes --remove-orphans
+      args:
+        chdir: "{{ item }}"
+      loop:
+        - /opt/server-infra/stacks/llm-service
+        - /opt/server-infra/stacks/monitoring
+        - /opt/server-infra/stacks/workshops
+      ignore_errors: yes
+
+    - name: Kill any remaining containers
+      shell: docker ps -aq | xargs -r docker rm -f
+      ignore_errors: yes
+
+    - name: Prune everything
+      community.docker.docker_prune:
+        containers: yes
+        images: yes
+        volumes: yes
+        networks: yes
+        builder_cache: yes
+
+    - name: Confirm GPU is still visible
+      command: nvidia-smi
+      register: gpu_check
+
+    - name: Report status
+      debug:
+        msg: "System nuked. GPU status: {{ 'healthy' if gpu_check.rc == 0 else 'check manually' }}"
