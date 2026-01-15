@@ -1,0 +1,125 @@
+---
+# Monitoring playbook - deploys Prometheus, Grafana, node-exporter, and dcgm-exporter
+# Run with: ansible-playbook -i inventory.ini playbooks/monitoring.yml
+
+- name: Deploy monitoring stack
+  hosts: gpu_servers
+  become: true
+  
+  vars:
+    repo_path: "{{ ansible_env.HOME }}/server-infra"  # Adjust to match your repo location
+    stack_path: "{{ repo_path }}/stacks/monitoring"
+  
+  tasks:
+    # ==================== Pre-flight Checks ====================
+    - name: Verify Docker is running
+      systemd:
+        name: docker
+        state: started
+      register: docker_status
+
+    - name: Verify NVIDIA Container Toolkit is configured
+      command: docker info --format '{{ "{{" }}.Runtimes{{ "}}" }}'
+      register: docker_runtimes
+      changed_when: false
+      failed_when: "'nvidia' not in docker_runtimes.stdout"
+
+    - name: Test GPU access in Docker
+      command: docker run --rm --gpus all nvidia/cuda:12.6.1-base-ubuntu24.04 nvidia-smi
+      register: gpu_docker_test
+      changed_when: false
+
+    - name: Display GPU Docker test result
+      debug:
+        msg: "GPU access in Docker: OK"
+      when: gpu_docker_test.rc == 0
+
+    # ==================== Ensure Stack Directory Exists ====================
+    - name: Check if monitoring stack exists
+      stat:
+        path: "{{ stack_path }}/docker-compose.yml"
+      register: compose_file
+
+    - name: Fail if stack directory not found
+      fail:
+        msg: |
+          Monitoring stack not found at {{ stack_path }}
+          Make sure the repository is cloned to {{ repo_path }}
+      when: not compose_file.stat.exists
+
+    # ==================== Deploy Monitoring Stack ====================
+    - name: Pull latest images
+      community.docker.docker_compose_v2:
+        project_src: "{{ stack_path }}"
+        pull: always
+        state: present
+      register: pull_result
+
+    - name: Start monitoring stack
+      community.docker.docker_compose_v2:
+        project_src: "{{ stack_path }}"
+        state: present
+      register: compose_result
+
+    - name: Display deployed containers
+      debug:
+        var: compose_result
+
+    # ==================== Health Checks ====================
+    - name: Wait for Prometheus to be ready
+      uri:
+        url: "http://localhost:9090/-/ready"
+        status_code: 200
+      register: prometheus_health
+      until: prometheus_health.status == 200
+      retries: 12
+      delay: 5
+
+    - name: Wait for Grafana to be ready
+      uri:
+        url: "http://localhost:3000/api/health"
+        status_code: 200
+      register: grafana_health
+      until: grafana_health.status == 200
+      retries: 12
+      delay: 5
+
+    - name: Check node-exporter metrics endpoint
+      uri:
+        url: "http://localhost:9100/metrics"
+        status_code: 200
+        return_content: no
+      register: node_exporter_health
+
+    - name: Check dcgm-exporter metrics endpoint
+      uri:
+        url: "http://localhost:9400/metrics"
+        status_code: 200
+        return_content: no
+      register: dcgm_health
+
+    # ==================== Summary ====================
+    - name: Display monitoring stack status
+      debug:
+        msg: |
+          ========================================
+          Monitoring Stack Deployed Successfully!
+          ========================================
+          
+          Services:
+            - Prometheus:    http://{{ ansible_host }}:9090
+            - Grafana:       http://{{ ansible_host }}:3000
+            - Node Exporter: http://{{ ansible_host }}:9100/metrics
+            - DCGM Exporter: http://{{ ansible_host }}:9400/metrics
+          
+          Grafana default credentials:
+            Username: admin
+            Password: admin
+          
+          Next steps:
+            1. Login to Grafana
+            2. Add Prometheus as data source (URL: http://prometheus:9090)
+            3. Import dashboards:
+               - Node Exporter: 1860
+               - NVIDIA DCGM: 12239
+          ========================================

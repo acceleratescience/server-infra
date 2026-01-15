@@ -1,0 +1,136 @@
+---
+- name: Setup GPU server base configuration
+  hosts: gpu_servers
+  become: true
+  
+  vars:
+    arch_mapping:
+      x86_64: amd64
+      aarch64: arm64
+    dpkg_arch: "{{ arch_mapping[ansible_architecture] | default('amd64') }}"
+    keyring_dir: /etc/apt/keyrings
+    docker_users:
+      - "{{ ansible_user }}"
+    repo_url: "https://github.com/acceleratescience/server-infra.git"  # Or your actual repo URL
+    repo_path: "/root/server-infra"
+
+  tasks:
+    # ==================== System Updates ====================
+    - name: Update apt cache and install base dependencies
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+          - git
+          - htop
+          - nvtop
+          - tmux
+        state: present
+
+    # ==================== Clone Repository ====================
+    - name: Clone server infrastructure repository
+      git:
+        repo: "{{ repo_url }}"
+        dest: "{{ repo_path }}"
+        version: main  # or master, depending on your branch
+        update: yes
+
+    # ==================== Docker Installation ====================
+    - name: Create keyrings directory
+      file:
+        path: "{{ keyring_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Download Docker GPG key
+      get_url:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        dest: "{{ keyring_dir }}/docker.asc"
+        mode: '0644'
+
+    - name: Add Docker repository
+      apt_repository:
+        repo: "deb [arch={{ dpkg_arch }} signed-by={{ keyring_dir }}/docker.asc] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        filename: docker
+        state: present
+        update_cache: yes
+
+    - name: Install Docker packages
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-compose-plugin
+        state: present
+
+    - name: Add users to docker group
+      user:
+        name: "{{ item }}"
+        groups: docker
+        append: yes
+      loop: "{{ docker_users }}"
+
+    # ==================== NVIDIA Driver Installation ====================
+
+    - name: Install NVIDIA driver
+      apt:
+        name: nvidia-driver-550  # Or 535, 545 depending on your needs
+        state: present
+      notify: Reboot server
+
+    # Add to handlers section:
+    - name: Reboot server
+      reboot:
+        msg: "Rebooting for NVIDIA driver installation"
+        reboot_timeout: 300
+
+    # ==================== NVIDIA Container Toolkit ====================
+    - name: Download NVIDIA Container Toolkit GPG key
+      get_url:
+        url: https://nvidia.github.io/libnvidia-container/gpgkey
+        dest: "{{ keyring_dir }}/nvidia-container-toolkit.asc"
+        mode: '0644'
+
+    - name: Add NVIDIA Container Toolkit repository
+      apt_repository:
+        repo: "deb [signed-by={{ keyring_dir }}/nvidia-container-toolkit.asc] https://nvidia.github.io/libnvidia-container/stable/deb/$(ARCH) /"
+        filename: nvidia-container-toolkit
+        state: present
+        update_cache: yes
+
+    - name: Install NVIDIA Container Toolkit
+      apt:
+        name: nvidia-container-toolkit
+        state: present
+
+    - name: Configure Docker to use NVIDIA runtime
+      shell: |
+        grep -q "nvidia-container-runtime" /etc/docker/daemon.json || \
+        nvidia-ctk runtime configure --runtime=docker
+      register: nvidia_config
+      changed_when: "'nvidia-container-runtime' not in nvidia_config.stdout"
+      notify: Restart Docker
+
+  handlers:
+    - name: Restart Docker
+      systemd:
+        name: docker
+        state: restarted
+
+  post_tasks:
+    - name: Verify NVIDIA driver is working
+      command: nvidia-smi
+      register: nvidia_smi_output
+      changed_when: false
+      failed_when: false 
+
+    - name: Display GPU info
+      debug:
+        msg: "{{ nvidia_smi_output.stdout_lines }}"
+      when: nvidia_smi_output.rc == 0

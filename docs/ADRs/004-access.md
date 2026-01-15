@@ -1,4 +1,4 @@
-# ADR-004. Access
+# ADR-004. Access management
 
 Date: YYYY-MM-DD
 Status: Proposed | Accepted | Superseded by ADR-XXX
