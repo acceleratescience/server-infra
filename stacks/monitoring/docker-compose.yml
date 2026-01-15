@@ -52,7 +52,7 @@ services:
     container_name: monitoring-grafana
     restart: always
     ports:
-      - "3001:3000"
+      - "3000:3001"
     volumes:
       - grafana_data:/var/lib/grafana
 
